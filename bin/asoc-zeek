@@ -1,0 +1,426 @@
+#!/usr/bin/env bash
+
+# ----------------------------------------------------------------------------------------
+# asoc-zeek
+# ----------------------------------------------------------------------------------------
+
+set -e
+
+# Globals
+# ----------------------------------------------------------------------------------------
+scriptname=$(basename $0)
+os=$(uname -s)
+zeekcmd=zeek
+capcmd=capstats
+sshcmd=ssh
+default_workdir="$HOME/.flightsim/zeek"
+# SFTP host is set based on --staging.
+sftp_host=""
+sftp_port="2222"
+workdir=""
+org_id=""
+intf=""
+quiet=false
+staging=false
+zeek_status_filename=".status"
+# $workdir/$zeek_status_filename once workdir is determined.
+zeek_status_file=""
+rc_ok=0
+rc_err=1
+
+usage_msg="Zeek for Flightsim
+
+NOTE: If this is your first time running this script, run: $scriptname --man
+
+usage: $scriptname -o <ASOC_CONSOLE_ORG_ID> -i <ZEEK_INTF> [-h -m -q -w <WORK_DIR>]
+Mandatory arguments:
+  -i|--intf <INTF>
+  -o|--org <ASOC_CONSOLE_ORG_ID>
+Optional arguments:
+  -h|--help
+  -m|--man
+  -q|--quiet
+  -s|--staging
+  -w|--work <WORK_DIR> (default: $default_workdir)
+"
+
+manual_msg="Zeek for Flightsim
+
+Introduction:
+$scriptname automates Zeek configuration and execution.  $scriptname is meant
+to be used alongside AlphaSOC's threat simulation tool, Network Flight Simulator
+(which can be found at https://github.com/alphasoc/flightsim), to showcase the
+various threats that can be detected and displayed via the AlphaSOC Console
+(https://console.alphasoc.net).
+
+User Permissions:
+Zeek captures and analyzes host generated network traffic.  As such, the user
+account under which you run $scriptname must have permission to capture packets.
+On Linux systems with kernels supporting capability bits (ie. CAP_NET_RAW), you
+can run $scriptname under your default user account and $scriptname will adjust
+the capabilities of the Zeek binaries.  On other systems (ie. BSDs) or on Linux
+with kernels lacking capability bit support, you must run $scriptname as
+super-user/root.  Be aware of this when choosing SSH key locations and other user
+specific options mentioned in the sections below.
+
+Installation:
+In order to use $scriptname, you must first install Zeek on your system.  This
+can be done by visiting https://zeek.org/get-zeek/ and following the
+instructions.  Once Zeek is installed, make sure to add the installation
+destination to your user PATH.  For example, if the Zeek binaries get installed
+to /opt/zeek/bin, run:
+
+  $ export PATH=\$PATH:/opt/zeek/bin
+
+AlphaSOC Console:
+Next, you will need to obtain an AlphaSOC Console organization ID.  If you're
+aiming for a development/staging account, register at
+https://console.staging.alphasoc.net.  Otherwise, register at
+https://console.alphasoc.net.  Once registered, the organization ID
+can be found by clicking \"Credentials\" -> \"General\" and scanning to the
+bottom of the credentials pane for \"organization_id\".
+
+SSH/Authentication:
+$scriptname uses Zeek's SFTP logging plugin in order to deliver network telemetry
+to AlphaSOC.  This requires that the user properly set up SSH-key authentication.
+First, generate an SSH key with no passphrase (ie. via \`ssh-keygen\`, etc) and
+save it to a user readable location on the machine from which you'll run
+$scriptname and \`flightsim\` (ie. ~/.ssh/).
+
+Then, upload the public key to the AlphaSOC Console by clicking
+\"Credentials\" -> \"SSH Keys\" -> \"New SSH Key\". Once uploaded, make sure this
+key-pair will be used when communicating with the AlphaSOC Console
+by modifying your SSH client config.  This can be done by editing ~/.ssh/config.
+For regular users, add:
+
+Host sftp.alphasoc.net
+  HostName sftp.alphasoc.net
+  IdentityFile /path/to/SSH-keys/your-key-file
+
+For development/staging users, add:
+Host sftp.staging.alphasoc.net
+  HostName sftp.staging.alphasoc.net
+  IdentityFile /path/to/SSH-keys/your-key-file
+
+Again, take note of which user account will be used to run $scriptname and apply
+the SSH client config changes to the correct account.  If you prefer, you may
+instead use an authentication agent (ie. ssh-agent, etc).
+
+Mandatory Command Line Options:
+-i|--intf <INTF>
+\t INTF is the network interface on which Zeek will listen and process network
+\t telemetry.
+-o|--org <ASOC_CONSOLE_ORG_ID>
+\t ASOC_CONSOLE_ORG_ID is the organization_id obtained when registering with
+\t https://console.staging.alphasoc.net and is used as a means to authenticate
+\t with the AlphaSOC staging server.
+Optional Command Line Options:
+-h|--help
+\t Displays a brief help message with usage instructions.
+-m|--man
+\t Displays this message.
+-q|--quiet
+\t Supresses script output.
+-s|--staging
+\t Configure $scriptname for use with console.staging.alphasoc.net.
+-w|--work <WORK_DIR>
+\t WORK_DIR is an optional argument which can be used to specify the directory in
+\t which Zeek will run and deposit logs.  The generated Zeek config is also
+\t placed inside this directory along with stderr.log and stdout.log log files.
+\t The default work directory is $default_workdir.
+
+Troubleshooting:
+1. unable to authenticate ASOC_CONSOLE_ORG_ID@sftp.alphasoc.net on port 2222, check SSH settings
+   unable to authenticate ASOC_CONSOLE_ORG_ID@sftp.staging.alphasoc.net on port 2222, check SSH settings
+This message is the result of a failed connectivity test with the AlphaSOC SFTP
+server.  First, make sure that your ASOC_CONSOLE_ORG_ID matches the
+\"organization_id\" in the Credentials pane of the AlphaSOC Console.  Next,
+ensure that you have generated and uploaded a valid SSH public key to the
+AlphaSOC Console.  Finally, ensure that this key is being used by SSH in order to
+authenticate with sftp.staging.alphasoc.net.  Refer to the \"SSH/Authentication\"
+section.
+
+2. pcap_error: socket: Operation not permitted (pcap_activate)
+   pcap_error: (cannot open device) /dev/bpf: Permission denied (pcap_activate)
+Invalid permissions for the packet capture device are indicated by these types of
+messages.  You may need to run $scriptname as root.  Refer to the
+\"User Permissions\" section.
+"
+
+# Utility Functions
+# ----------------------------------------------------------------------------------------
+
+# print prints msg if quiet has not been set by the user.
+print() {
+    msg=$1
+    ! $quiet && printf "$msg" || return $rc_ok
+}
+
+# Determines if cmd in the user's path.
+cmd_in_path() {
+    local cmd=$1
+    command -v "$cmd" &>/dev/null && return $rc_ok || return $rc_err
+}
+
+# running returns rc_ok if a PID is running, rc_err if it isn't.
+running() {
+    local pid=$1
+    kill -0 $pid &>/dev/null && return $rc_ok || return $rc_err
+}
+
+# Simple connectivity test to ensure auth works.
+test_sftp_auth() {
+    local out=$(ssh -p $sftp_port "$org_id@$sftp_host" 2>&1)
+    [[ "$out" =~ publickey ]] && return $rc_err || return $rc_ok
+}
+
+# Set file capabilities for Zeek binaries to use raw sockets.
+linux_setcaps() {
+    local rc=$rc_ok
+    for cmd in "$zeekcmd" "$capcmd"; do
+        ! sudo setcap cap_net_raw=eip $(which "$cmd") &>/dev/null && rc=$rc_err
+    done
+    return $rc
+}
+
+quit() {
+    local rc=$1
+    # Kill zeek if it's running.  Yes, there's a small window of opportunity for the pid
+    # to be re-used.
+    if [[ -n $zeek_pid ]]; then
+        local tries=0
+        while running $zeek_pid && [[ $tries -lt 5 ]]; do
+            print "killing zeek ($zeek_pid)\n"
+            kill $zeek_pid &>/dev/null || true
+            sleep 1
+            tries=$(($tries + 1))
+        done
+        # kill -9 at this point.
+        if running $zeek_pid && [[ $tries == 5 ]]; then
+            kill -9 $zeek_pid &>/dev/null || true
+            sleep 1
+            # Zeek still running?  Abort.
+            if running $zeek_pid; then
+                print "error: failed killing zeek ($zeek_pid), aborting\n"
+                exit $rc_err
+            fi
+        fi
+    fi
+    print "cleaning up\n"
+    if ! cleanup; then
+        exit $rc_err
+    fi
+    [[ -n $rc ]] && exit $rc || exit $rc_ok
+}
+
+# Runs zeek cleanup routines on exit, and only when a zeek status file is found, signalling
+# that zeek actually ran.
+cleanup() {
+    if ! delete_logs; then
+        print "error: failed deleting zeek log files\n"
+        return $rc_err
+    fi
+    return $rc_ok
+}
+
+# Removes all the zeek-specific logs and the zeek status file from the working
+# dir.  stdout.log, stderr.log and the zeek status file are left alone for possible debug
+# purposes.
+delete_logs() {
+    local rc=$rc_ok
+    for f in "$workdir"/*.log "$zeek_status_file"; do
+        [[ ! -e "$f" ]] && continue
+        if [[ "$f" =~ std(err|out)\.log ]]; then
+            : # leave them alone
+        else
+            # Don't redirect output in case input is needed (ie. "remove write-protected").
+            if ! rm "$f"; then
+                rc=$rc_err
+            fi
+        fi
+    done
+    return $rc
+}
+
+# Pre-flight checks verifying that the script has what it needs to run.
+check_preflights() {
+    # Check mandatory arguments.
+    if [[ -z "$org_id" ]] || [[ -z "$intf" ]]; then
+        print "\nerror: mandatory arguments not supplied; see $scriptname --help\n"
+        return $rc_err
+    fi
+    # Check zeek installed and in path.
+    if ! cmd_in_path "$zeekcmd" || ! cmd_in_path "$capcmd"; then
+        print "\nerror: zeek binaries not found in PATH\n"
+        return $rc_err
+    fi
+    # Check that ssh is installed and in path.
+    if ! cmd_in_path "$sshcmd"; then
+        print "\nerror: $sshcmd not found in PATH\n"
+        return $rc_err
+    fi
+    if ! test_sftp_auth; then
+        print "\nerror: unable to authenticate $org_id@$sftp_host on port $sftp_port, check SSH settings\n"
+        return $rc_err
+    fi
+    return $rc_ok
+}
+
+# Print the status string deposited by zeek in $zeek_status_file, or UNKNOWN.
+zeek_status() {
+    [[ -e "$zeek_status_file" ]] && cat "$zeek_status_file" || echo "UNKNOWN"
+}
+
+# Generates a zeek from user supplied parameters.  The configuration nstructs zeek to push
+# IP, DNS, HTTP and SSL/TLS logs to AlphaSOC for analysis.
+dump_zeek_config() {
+    local username=$1
+    printf "module SSL;
+export {
+    redef record Info += {
+        cert_hash: string &log &optional;
+    };
+}
+hook ssl_finishing(c: connection) &priority=5
+    {
+    if ( c\$ssl?\$cert_chain && |c\$ssl\$cert_chain| > 0 && c\$ssl\$cert_chain[0]?\$x509 )
+        {
+        c\$ssl\$cert_hash = c\$ssl\$cert_chain[0]\$sha1;
+        }
+    }
+
+event zeek_init()
+{
+    Log::add_filter(Conn::LOG, [\$name=\"log-conn\", \$path=\"conn_logs\", \$writer=Log::WRITER_ASCII,
+           \$interv=30sec, \$postprocessor=Log::sftp_postprocessor]);
+    Log::sftp_destinations[Log::WRITER_ASCII,\"conn_logs\"] = set([\$user=\"$username\",\$host=\"$sftp_host\",\$host_port=$sftp_port,\$path=\"conn_logs_path\"]);
+
+    Log::add_filter(DNS::LOG, [\$name=\"log-dns\", \$path=\"dns_logs\", \$writer=Log::WRITER_ASCII,
+           \$interv=30sec, \$postprocessor=Log::sftp_postprocessor]);
+    Log::sftp_destinations[Log::WRITER_ASCII,\"dns_logs\"] = set([\$user=\"$username\",\$host=\"$sftp_host\",\$host_port=$sftp_port,\$path=\"dns_logs_path\"]);
+
+    Log::add_filter(HTTP::LOG, [\$name=\"log-http\", \$path=\"http_logs\", \$writer=Log::WRITER_ASCII,
+           \$interv=30sec, \$postprocessor=Log::sftp_postprocessor]);
+    Log::sftp_destinations[Log::WRITER_ASCII,\"http_logs\"] = set([\$user=\"$username\",\$host=\"$sftp_host\",\$host_port=$sftp_port,\$path=\"http_logs_path\"]);
+
+    Log::add_filter(SSL::LOG, [\$name=\"log-ssl\", \$path=\"ssl_logs\", \$writer=Log::WRITER_ASCII,
+           \$interv=30sec, \$postprocessor=Log::sftp_postprocessor]);
+    Log::sftp_destinations[Log::WRITER_ASCII,\"ssl_logs\"] = set([\$user=\"$username\",\$host=\"$sftp_host\",\$host_port=$sftp_port,\$path=\"ssl_logs_path\"]);
+}
+"
+}
+
+# main
+# ----------------------------------------------------------------------------------------
+
+# trap ctrl-c and sigterm.
+trap quit INT TERM
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            print "$usage_msg"
+            exit $rc_ok
+            ;;
+        -i|--intf)
+            intf="$2"
+            shift
+            ;;
+        -m|--man)
+            print "$manual_msg"
+            exit $rc_ok
+            ;;
+        -o|--org)
+            org_id="$2"
+            shift
+            ;;
+        -q|--quiet)
+            quiet=true
+            ;;
+        -s|--staging)
+            staging=true
+            ;;
+        -w|--workdir)
+            workdir="$2"
+            shift
+            ;;
+        *) print "Unknown parameter: $1\n\n"
+           print "$usage_msg"
+           exit $rc_err
+    esac
+    shift
+done
+
+print "   __|__     AlphaSOC Zeek for Flightsim    __|__\n"
+print "*---o0o---*"
+print "                               *--o0o--*\n\n"
+
+# Set workdir to default if not specified.
+if [[ -z "$workdir" ]]; then
+    workdir=$default_workdir
+fi
+# Check that workdir exists, otherwise create it.
+if [[ ! -d "$workdir" ]]; then
+    if ! mkdir -p "$workdir"; then
+        print "error: failed creating $workdir\n"
+        quit $rc_err
+    fi
+fi
+# Get full path of workdir and zeek_status_file, now that workdir exists.
+workdir=$(cd "$workdir"; pwd)
+zeek_status_file="$workdir/$zeek_status_filename"
+
+# Set sftp host.
+$staging && sftp_host="sftp.staging.alphasoc.net" || sftp_host="sftp.alphasoc.net"
+
+# Some info for the user.
+print "organization id: $org_id\n"
+print "interface: $intf\n"
+print "workdir: $workdir\n"
+print "SFTP server: $sftp_host\n"
+print "AlphaSOC Console: "
+if $staging; then
+    print "https://console.staging.alphasoc.net\n"
+else
+    print "https://console.alphasoc.net\n"
+fi
+print "\n"
+
+# Preflights.
+print "running preflight checks\n"
+if ! check_preflights; then
+    quit $rc_err
+fi
+
+# Set network caps.
+if [[ "$os" == "Linux" ]]; then
+    print "setting capabilities for zeek binaries\n"
+    if ! linux_setcaps; then
+        print "error: failed setting capabilities; $scriptname must be run as root; refer to $scriptname --man\n"
+        quit $rc_err
+    fi
+fi
+
+# Generate the config.
+config_file="$workdir/$org_id.zeek"
+print "writing zeek config to $config_file\n"
+if ! dump_zeek_config "$org_id" > "$config_file"; then
+    print "error: failed writing config\n"
+    quit $rc_err
+fi
+print "zeek log files (including stdout.log and stderr.log) will be written to $workdir\n"
+
+# Change to workdir and run.
+cd "$workdir"
+print "\nstarting zeek on interface $intf\n"
+
+zeek -i "$intf" -p "$workdir" -U "$zeek_status_filename" "$org_id.zeek" > stdout.log 2> stderr.log &
+zeek_pid=$!
+print "CTRL-C to quit\n"
+if ! wait $zeek_pid; then
+    zeek_exit_status=$(zeek_status)
+    print "\nerror: zeek exited with status: $zeek_exit_status\n"
+    print "check $workdir/stderr.log and $workdir/stdout.log for errors\n"
+    print "refer to the \"Troubleshooting\" section in: $scriptname --man\n"
+    quit $rc_err
+fi
