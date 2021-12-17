@@ -27,23 +27,29 @@ you detect on your network, this is for you as well.
 
 Since this guide focuses on setting up Zeek to work with AE, an AlphaSOC account is
 needed to get started.  If you don't have an account, please visit
-[Demo | AlphaSOC](https://alphasoc.com/demo/).  You'll receive an email with a verification
-link and an **organization ID**.  Be sure to verify the account before continuing.
+[Demo | AlphaSOC](https://alphasoc.com/demo/) and register for one.  The registration
+will grant you a **free**, 30 day demo of AlphaSOC services.  You'll receive an email
+with a verification link and an **Organization ID**.  Be sure to verify the account
+before continuing.
 
 Once you have an account, please visit: [Console | AlphaSOC](https://console.alphasoc.net)
-and sign in with your credentials.  Your **organization ID** (also known as a
+and sign in with your credentials.  Your **Organization ID** (also known as a
 **Workspace ID**) will be found at the top of https://console.alphasoc.net/credentials
 Copy it to your clipboard for later use.
+
+**NOTE:** If you're an AlphaSOC developer using the staging variant of AlphaSOC services,
+see the [Developers](#developers) section before continuing on.
 
 ## SSH/Authentication
 
 Zeek will be configured to use SFTP (with SSH-key authentication) in order to upload
 telemetry to AlphaSOC.  Thus, you will want to generate an SSH-key pair (without a
-passhphrase) and upload the public key to the *Credentials* page
+passhphrase, unless you wish to take the necessary steps to use something like `ssh-agent)
+and upload the public key to the *Credentials* page
 (https://console.alphasoc.net/credentials) using the *SSH Keys* dialog.  Ensure that the
 private key is kept in a readable location on the system from which you will run Zeek,
-and also ensure that it will be used when communicating with AlphaSOC.  On UNIX-type
-systems, this can be done by modifying `~/.ssh/config` and adding the following:
+and also ensure that it will be used when communicating with AlphaSOC.  This can be done
+by modifying `~/.ssh/config` and adding the following:
 
     Host sftp.alphasoc.net
       HostName sftp.alphasoc.net
@@ -60,7 +66,7 @@ keys and config would remain in your home directory.  Lastly, BSD systems (inclu
 can be configured to allow a non-root user to access the packet capture device (`/dev/bpf`)
 thus allowing them to run programs such as Zeek.  This is done by adding the desired user
 to a group which has been given access to `/dev/bpf`.  Exact instructions on how to do this
-are beyond the scope of this guide, but are easily accessible online.
+are beyond the scope of this guide, but are readily available online.
 
 ## Installing Zeek
 
@@ -84,7 +90,7 @@ by the user account that will be used to run Zeek.  Then, determine on which int
 you want Zeek to capture packets (ie. via `ip`/`ifconfig`/etc) and finally, where INTF
 is the capture interface, run:
 
-    $ /path/to/asoc-zeek -i INTF -o YOUR_ORGANIZATION_ID
+    $ /path/to/asoc-zeek -i INTF -o ORGANIZATION_ID
 
 For additional usage documentation, see: `/path/to/asoc-zeek --man` and
 `/path/to/asoc-zeek --help`
@@ -120,27 +126,27 @@ Create an empty file to house your Zeek config.  You can call this file anything
     {
         Log::add_filter(Conn::LOG, [$name="log-conn", $path="conn_logs", $writer=Log::WRITER_ASCII,
                $interv=30sec, $postprocessor=Log::sftp_postprocessor]);
-        Log::sftp_destinations[Log::WRITER_ASCII,"conn_logs"] = set([$user="YOUR_ORGANIZATION_ID",$host="sftp.alphasoc.net",$host_port=2222,$path="conn_logs_path"]);
+        Log::sftp_destinations[Log::WRITER_ASCII,"conn_logs"] = set([$user="ORGANIZATION_ID",$host="sftp.alphasoc.net",$host_port=2222,$path="conn_logs_path"]);
 
         Log::add_filter(DNS::LOG, [$name="log-dns", $path="dns_logs", $writer=Log::WRITER_ASCII,
                $interv=30sec, $postprocessor=Log::sftp_postprocessor]);
-        Log::sftp_destinations[Log::WRITER_ASCII,"dns_logs"] = set([$user="YOUR_ORGANIZATION_ID",$host="sftp.alphasoc.net",$host_port=2222,$path="dns_logs_path"]);
+        Log::sftp_destinations[Log::WRITER_ASCII,"dns_logs"] = set([$user="ORGANIZATION_ID",$host="sftp.alphasoc.net",$host_port=2222,$path="dns_logs_path"]);
 
         Log::add_filter(HTTP::LOG, [$name="log-http", $path="http_logs", $writer=Log::WRITER_ASCII,
                $interv=30sec, $postprocessor=Log::sftp_postprocessor]);
-        Log::sftp_destinations[Log::WRITER_ASCII,"http_logs"] = set([$user="YOUR_ORGANIZATION_ID",$host="sftp.alphasoc.net",$host_port=2222,$path="http_logs_path"]);
+        Log::sftp_destinations[Log::WRITER_ASCII,"http_logs"] = set([$user="ORGANIZATION_ID",$host="sftp.alphasoc.net",$host_port=2222,$path="http_logs_path"]);
 
         Log::add_filter(SSL::LOG, [$name="log-ssl", $path="ssl_logs", $writer=Log::WRITER_ASCII,
                $interv=30sec, $postprocessor=Log::sftp_postprocessor]);
-        Log::sftp_destinations[Log::WRITER_ASCII,"ssl_logs"] = set([$user="YOUR_ORGANIZATION_ID",$host="sftp.alphasoc.net",$host_port=2222,$path="ssl_logs_path"]);
+        Log::sftp_destinations[Log::WRITER_ASCII,"ssl_logs"] = set([$user="ORGANIZATION_ID",$host="sftp.alphasoc.net",$host_port=2222,$path="ssl_logs_path"]);
     }
 
-Using your favourite text editor, replace all instances of *YOUR_ORGANIZATION_ID* with your actual organization id.
+Using your favourite text editor, replace all instances of *ORGANIZATION_ID* with your actual organization id.
 
 Before going any further, make sure your user account (root or otherwise) can authenticate
 with AlphaSOC.  To do so, run:
 
-    $ ssh -p 2222 YOUR_ORGANIZATION_ID@sftp.alphasoc.net
+    $ ssh -p 2222 ORGANIZATION_ID@sftp.alphasoc.net
 
 If you see output such as `Permission denied (publickey)`, check that the correct SSH
 public key has been uploaded to https://console.alphasoc.net/credentials, and that you
@@ -208,3 +214,9 @@ to the user.
 
 If you have any questions, hit any bugs or discrepancies in the documentation, please
 reach out to us on [TODO link to github]() by filing an issue.
+
+## Developers
+
+If you're an AlphaSOC developer using staging variants of AlphaSOC services, replace
+all instances of alphasoc.net with staging.alphasoc.net in your configurations and
+Console URLs.  If you plan on using the `asoc-zeek` BASH script, run it with '-s'.
