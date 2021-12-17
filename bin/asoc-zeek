@@ -106,7 +106,7 @@ Again, take note of which user account will be used to run $scriptname and apply
 the SSH client config changes to the correct account.  If you prefer, you may
 instead use an authentication agent (ie. ssh-agent, etc).
 
-Mandatory Command Line Options:
+Mandatory Command Line Arguments:
 -i|--intf <INTF>
 \t INTF is the network interface on which Zeek will listen and process network
 \t telemetry.
@@ -114,7 +114,7 @@ Mandatory Command Line Options:
 \t ASOC_CONSOLE_ORG_ID is the organization_id obtained when registering with
 \t https://console.staging.alphasoc.net and is used as a means to authenticate
 \t with the AlphaSOC staging server.
-Optional Command Line Options:
+Optional Command Line Arguments:
 -h|--help
 \t Displays a brief help message with usage instructions.
 -m|--man
@@ -373,6 +373,12 @@ zeek_status_file="$workdir/$zeek_status_filename"
 # Set sftp host.
 $staging && sftp_host="sftp.staging.alphasoc.net" || sftp_host="sftp.alphasoc.net"
 
+# Preflights.
+print "running preflight checks\n"
+if ! check_preflights; then
+    quit $rc_err
+fi
+
 # Some info for the user.
 print "organization id: $org_id\n"
 print "interface: $intf\n"
@@ -385,12 +391,6 @@ else
     print "https://console.alphasoc.net\n"
 fi
 print "\n"
-
-# Preflights.
-print "running preflight checks\n"
-if ! check_preflights; then
-    quit $rc_err
-fi
 
 # Set network caps.
 if [[ "$os" == "Linux" ]]; then
