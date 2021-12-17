@@ -2,6 +2,9 @@
 
 # ----------------------------------------------------------------------------------------
 # asoc-zeek
+#
+# Automates Zeek configuration and startup for use with AlphaSOC Analytics Engine and
+# Console (https://docs.alphasoc.com/ae/architecture/).
 # ----------------------------------------------------------------------------------------
 
 set -e
@@ -13,7 +16,7 @@ os=$(uname -s)
 zeekcmd=zeek
 capcmd=capstats
 sshcmd=ssh
-default_workdir="$HOME/.flightsim/zeek"
+default_workdir="$HOME/.asoc/zeek"
 # SFTP host is set based on --staging.
 sftp_host=""
 sftp_port="2222"
@@ -28,123 +31,141 @@ zeek_status_file=""
 rc_ok=0
 rc_err=1
 
-usage_msg="Zeek for Flightsim
+usage_msg="Zeek for AlphaSOC
 
 NOTE: If this is your first time running this script, run: $scriptname --man
 
-usage: $scriptname -o <ASOC_CONSOLE_ORG_ID> -i <ZEEK_INTF> [-h -m -q -w <WORK_DIR>]
+usage: $scriptname -i <INTF> -o <ORGANIZATION_ID> [-h -m -q -s -w <WORK_DIR>]
+
 Mandatory arguments:
   -i|--intf <INTF>
-  -o|--org <ASOC_CONSOLE_ORG_ID>
+  -o|--org <ORGANIZATION_ID>
+
 Optional arguments:
   -h|--help
   -m|--man
   -q|--quiet
-  -s|--staging
+  -s|--staging (developers only, see 'Developers' section in: $scriptname --man)
   -w|--work <WORK_DIR> (default: $default_workdir)
 "
 
-manual_msg="Zeek for Flightsim
+manual_msg="Zeek for AlphaSOC
 
 Introduction:
-$scriptname automates Zeek configuration and execution.  $scriptname is meant
-to be used alongside AlphaSOC's threat simulation tool, Network Flight Simulator
-(which can be found at https://github.com/alphasoc/flightsim), to showcase the
-various threats that can be detected and displayed via the AlphaSOC Console
-(https://console.alphasoc.net).
 
-User Permissions:
-Zeek captures and analyzes host generated network traffic.  As such, the user
-account under which you run $scriptname must have permission to capture packets.
-On Linux systems with kernels supporting capability bits (ie. CAP_NET_RAW), you
-can run $scriptname under your default user account and $scriptname will adjust
-the capabilities of the Zeek binaries.  On other systems (ie. BSDs) or on Linux
-with kernels lacking capability bit support, you must run $scriptname as
-super-user/root.  Be aware of this when choosing SSH key locations and other user
-specific options mentioned in the sections below.
+$scriptname automates Zeek configuration and execution.  $scriptname is meant to be used
+alongside AlphaSOC's threat simulation tool, Network Flight Simulator (which can be found
+at https://github.com/alphasoc/flightsim), to showcase the various threats that can be
+detected and displayed via the AlphaSOC Console.
 
-Installation:
-In order to use $scriptname, you must first install Zeek on your system.  This
-can be done by visiting https://zeek.org/get-zeek/ and following the
-instructions.  Once Zeek is installed, make sure to add the installation
-destination to your user PATH.  For example, if the Zeek binaries get installed
-to /opt/zeek/bin, run:
+In order to make full use of this script, an AlphaSOC account is needed to get started.
+If you don't have an account, please visit https://alphasoc.com/demo/ and register for one.
+The registration will grant you a FREE 30 day demo of AlphaSOC services.  You'll receive an
+email with a verification link and an Organization ID.  Be sure to verify the account
+before continuing.
 
-  $ export PATH=\$PATH:/opt/zeek/bin
+Once you have an account, please visit https://console.alphasoc.net and sign in with your
+credentials.  Your Organization ID (also known as a Workspace ID) will be found at the top
+of https://console.alphasoc.net/credentials.  Copy it to your clipboard for later use.
 
-AlphaSOC Console:
-Next, you will need to obtain an AlphaSOC Console organization ID.  If you're
-aiming for a development/staging account, register at
-https://console.staging.alphasoc.net.  Otherwise, register at
-https://console.alphasoc.net.  Once registered, the organization ID
-can be found by clicking \"Credentials\" -> \"General\" and scanning to the
-bottom of the credentials pane for \"organization_id\".
 
 SSH/Authentication:
-$scriptname uses Zeek's SFTP logging plugin in order to deliver network telemetry
-to AlphaSOC.  This requires that the user properly set up SSH-key authentication.
-First, generate an SSH key with no passphrase (ie. via \`ssh-keygen\`, etc) and
-save it to a user readable location on the machine from which you'll run
-$scriptname and \`flightsim\` (ie. ~/.ssh/).
 
-Then, upload the public key to the AlphaSOC Console by clicking
-\"Credentials\" -> \"SSH Keys\" -> \"New SSH Key\". Once uploaded, make sure this
-key-pair will be used when communicating with the AlphaSOC Console
-by modifying your SSH client config.  This can be done by editing ~/.ssh/config.
-For regular users, add:
+Zeek will be configured to use SFTP (with SSH-key authentication) in order to upload
+telemetry to AlphaSOC.  Thus, you will want to generate an SSH-key pair (without a
+passhphrase, unless you wish to take the necessary steps to use something like ssh-agent)
+and upload the public key to the 'Credentials' page (https://console.alphasoc.net/credentials)
+using the SSH Keys dialog.  Ensure that the private key is kept in a readable location on
+the system from which you will run $scriptname, and also ensure that it will be used when
+communicating with AlphaSOC. This can be done by modifying ~/.ssh/config and adding the
+following:
 
 Host sftp.alphasoc.net
   HostName sftp.alphasoc.net
   IdentityFile /path/to/SSH-keys/your-key-file
 
-For development/staging users, add:
-Host sftp.staging.alphasoc.net
-  HostName sftp.staging.alphasoc.net
-  IdentityFile /path/to/SSH-keys/your-key-file
+NOTE: Because Zeek captures packets from a given interface, $scriptname must be run by a
+user account with the appropriate permissions.  On Linux systems with kernels supporting
+capability bits (ie. CAP_NET_RAW), this can be a regular user account.  $scriptname
+will automatically set the correct capability bits for the necessary Zeek binaries.
+On BSD systems or Linux systems without capability bit support, it will be easiest to run
+$scriptname as root or via sudo.  In such cases, for simplicity, the generated SSH keys and
+modified config should reside in roots home directory (ie. /root/.ssh).  On OSX, you would
+use sudo, but the SSH keys and config would remain in your home directory.  Lastly, BSD
+systems (including OSX) can be configured to allow a non-root user to access the packet
+capture device (/dev/bpf) thus allowing them to run programs such as Zeek.  This is done
+by adding the desired user to a group which has been given access to /dev/bpf.  Exact
+instructions on how to do this are beyond the scope of this guide, but are readily
+available online.
 
-Again, take note of which user account will be used to run $scriptname and apply
-the SSH client config changes to the correct account.  If you prefer, you may
-instead use an authentication agent (ie. ssh-agent, etc).
+
+Installing Zeek:
+
+$scriptname has been tested with Zeek version 4.1.1.  To install Zeek, visit
+https://zeek.org/get-zeek/, and follow the instructions for your system.  Once installed,
+make sure to add the installation destination to your user path.  Again, this will be
+the user that will run $scriptname.  For example, if Zeek has been installed to
+/opt/zeek/bin add the path via:
+
+$ export PATH=\$PATH:/opt/zeek/bin
+
+You may also add this to your shell's startup script.
+
+Now you should be all set.
+
+
+Usage:
+
+$scriptname -i <INTF> -o <ORGANIZATION_ID> [-h -m -q -s -w <WORK_DIR>]
 
 Mandatory Command Line Arguments:
--i|--intf <INTF>
-\t INTF is the network interface on which Zeek will listen and process network
-\t telemetry.
--o|--org <ASOC_CONSOLE_ORG_ID>
-\t ASOC_CONSOLE_ORG_ID is the organization_id obtained when registering with
-\t https://console.staging.alphasoc.net and is used as a means to authenticate
-\t with the AlphaSOC staging server.
+  -i|--intf <INTF>
+    INTF is the network interface from which Zeek will capture packets and process network
+    telemetry.
+  -o|--org <ORGANIZATION_ID>
+    ORGANIZATION_ID is the Workspace ID obtained when registering with AlphSOC, and is used
+    during authentication.
+
 Optional Command Line Arguments:
--h|--help
-\t Displays a brief help message with usage instructions.
--m|--man
-\t Displays this message.
--q|--quiet
-\t Supresses script output.
--s|--staging
-\t Configure $scriptname for use with console.staging.alphasoc.net.
--w|--work <WORK_DIR>
-\t WORK_DIR is an optional argument which can be used to specify the directory in
-\t which Zeek will run and deposit logs.  The generated Zeek config is also
-\t placed inside this directory along with stderr.log and stdout.log log files.
-\t The default work directory is $default_workdir.
+  -h|--help
+    Displays a brief help message with usage instructions.
+  -m|--man
+    Displays this message.
+  -q|--quiet
+    Supresses script output.
+  -s|--staging
+    Configure $scriptname for use with the development/staging variant of AlphaSOC services.
+    See the 'Developers' section below.
+  -w|--work <WORK_DIR>
+    WORK_DIR is an optional argument which can be used to specify the directory in which
+    Zeek will run and deposit logs.  The generated Zeek config is also placed inside this
+    directory along with stderr.log and stdout.log log files.  The default work directory is
+    $default_workdir.
+
 
 Troubleshooting:
-1. unable to authenticate ASOC_CONSOLE_ORG_ID@sftp.alphasoc.net on port 2222, check SSH settings
-   unable to authenticate ASOC_CONSOLE_ORG_ID@sftp.staging.alphasoc.net on port 2222, check SSH settings
-This message is the result of a failed connectivity test with the AlphaSOC SFTP
-server.  First, make sure that your ASOC_CONSOLE_ORG_ID matches the
-\"organization_id\" in the Credentials pane of the AlphaSOC Console.  Next,
-ensure that you have generated and uploaded a valid SSH public key to the
-AlphaSOC Console.  Finally, ensure that this key is being used by SSH in order to
-authenticate with sftp.staging.alphasoc.net.  Refer to the \"SSH/Authentication\"
-section.
+
+1. unable to authenticate ORGANIZATION_ID@sftp.alphasoc.net on port 2222, check SSH settings
+   unable to authenticate ORGANIZATION_ID@sftp.staging.alphasoc.net on port 2222, check SSH settings
+This message is the result of a failed connectivity test with the AlphaSOC SFTP server.
+First, make sure that your ORGANIZATION_ID matches the 'Workspace ID' in the 'Credentials'
+pane of the AlphaSOC Console.  Next, ensure that you have generated and uploaded a valid SSH
+public key to the AlphaSOC Console.  Finally, ensure that this key is being used by SSH in order to
+authenticate.  Refer to the 'SSH/Authentication' section.
 
 2. pcap_error: socket: Operation not permitted (pcap_activate)
    pcap_error: (cannot open device) /dev/bpf: Permission denied (pcap_activate)
 Invalid permissions for the packet capture device are indicated by these types of
-messages.  You may need to run $scriptname as root.  Refer to the
-\"User Permissions\" section.
+messages.  You may need to run $scriptname as root.  Refer to the 'NOTE' at the bottom of
+the 'SSH/Authentication' section.
+
+
+Developers:
+
+If you're a developer using the development/staging variant of AlphaSOC services, be sure
+to run $scriptname with the '-s' switch.  This will use staging variants of AlphaSOC SFTP
+servers, and imply use of the staging Console.  All instances of alphasoc.net should be
+replaced with staging.alphasoc.net.
 "
 
 # Utility Functions
@@ -351,9 +372,9 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-print "   __|__     AlphaSOC Zeek for Flightsim    __|__\n"
-print "*---o0o---*"
-print "                               *--o0o--*\n\n"
+print "~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+print "~~~ Zeek for AlphaSOC ~~~\n"
+print "~~~~~~~~~~~~~~~~~~~~~~~~~\n\n"
 
 # Set workdir to default if not specified.
 if [[ -z "$workdir" ]]; then
