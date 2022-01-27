@@ -192,7 +192,11 @@ running() {
 # Simple connectivity test to ensure auth works.
 test_sftp_auth() {
     local out=$(ssh -p $sftp_port "$org_id@$sftp_host" 2>&1)
-    [[ "$out" =~ publickey ]] && return $rc_err || return $rc_ok
+    # A successful connect will output:
+    #   PTY allocation request failed on channel 0
+    #   shell request failed on channel 0
+    local match="PTY\ allocation\ request"
+    [[ "$out" =~ $match ]] && return $rc_ok || return $rc_err
 }
 
 # Set file capabilities for Zeek binaries to use raw sockets.
