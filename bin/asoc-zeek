@@ -195,7 +195,8 @@ test_sftp_auth() {
     # A successful connect will output:
     #   PTY allocation request failed on channel 0
     #   shell request failed on channel 0
-    local match="PTY\ allocation\ request"
+    # with some potential variation of the first line (ie in the case of docker).
+    local match="shell\ request\ failed"
     [[ "$out" =~ $match ]] && return $rc_ok || return $rc_err
 }
 
