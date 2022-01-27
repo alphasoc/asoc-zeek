@@ -414,7 +414,7 @@ fi
 print "\n"
 
 # Set network caps.
-if [[ "$os" == "Linux" ]]; then
+if [[ "$os" == "Linux" ]] && [[ "$EUID" -ne 0 ]]; then
     print "setting capabilities for zeek binaries\n"
     if ! linux_setcaps; then
         print "error: failed setting capabilities; $scriptname must be run as root; refer to $scriptname --man\n"
