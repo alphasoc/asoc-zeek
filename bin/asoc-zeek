@@ -191,7 +191,7 @@ running() {
 
 # Simple connectivity test to ensure auth works.
 test_sftp_auth() {
-    local out=$(ssh -p $sftp_port "$org_id@$sftp_host" 2>&1)
+    local out=$(ssh -o StrictHostKeyChecking=no -p $sftp_port "$org_id@$sftp_host" 2>&1)
     # A successful connect will output:
     #   PTY allocation request failed on channel 0
     #   shell request failed on channel 0
